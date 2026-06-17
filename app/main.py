@@ -21,6 +21,9 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    import os
+    logger.info("WHATSAPP_TOKEN set: %s", bool(os.getenv("WHATSAPP_TOKEN")))
+    logger.info("WHATSAPP_PHONE_ID set: %s", bool(os.getenv("WHATSAPP_PHONE_ID")))
     Base.metadata.create_all(bind=engine)
     start_scheduler()
 
@@ -63,3 +66,12 @@ async def serve_frontend():
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/api/config-check")
+def config_check():
+    import os
+    return {
+        "WHATSAPP_TOKEN": bool(os.getenv("WHATSAPP_TOKEN")),
+        "WHATSAPP_PHONE_ID": bool(os.getenv("WHATSAPP_PHONE_ID")),
+    }
