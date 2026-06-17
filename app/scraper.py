@@ -11,13 +11,21 @@ HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
+        "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "Accept-Language": "en-IN,en;q=0.9,hi;q=0.8",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
     "Upgrade-Insecure-Requests": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Sec-Fetch-User": "?1",
+    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "Sec-Ch-Ua-Mobile": "?0",
+    "Sec-Ch-Ua-Platform": '"Windows"',
+    "Cache-Control": "max-age=0",
 }
 
 # Keywords that indicate OUT OF STOCK
@@ -44,7 +52,16 @@ class ScrapeResult:
 
 def scrape_product(url: str) -> ScrapeResult:
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        # Visit homepage first to get cookies (avoids bot detection)
+        from urllib.parse import urlparse
+        base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
+        try:
+            session.get(base, timeout=10)
+        except Exception:
+            pass
+        resp = session.get(url, timeout=15)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
 
@@ -72,7 +89,9 @@ def scrape_product(url: str) -> ScrapeResult:
                 out_text = btn_text
 
         # In-stock wins if ANY active "Add to Cart" button exists
-        logger.info("Scrape %s — in_stock_btn=%s out_stock_btn=%s", url, found_in_stock, found_out_of_stock)
+        logger.info("Scrape %s — in_stock_btn=%s out_stock_btn=%s price=%s", url, found_in_stock, found_out_of_stock, price)
+        if not found_in_stock and not found_out_of_stock:
+            logger.warning("No stock buttons found. Page snippet: %s", page_text[:300])
         if found_in_stock:
             return ScrapeResult(in_stock=True, price=price, status_text="add to cart")
         if found_out_of_stock:
