@@ -28,20 +28,7 @@ class ScrapeResult:
     error: Optional[str] = None
 
 
-def detect_platform(url: str) -> str:
-    if "blinkit.com" in url:
-        return "blinkit"
-    return "amul"
-
-
 def scrape_product(url: str) -> ScrapeResult:
-    platform = detect_platform(url)
-    if platform == "blinkit":
-        return _scrape_blinkit(url)
-    return _scrape_amul(url)
-
-
-def _scrape_amul(url: str) -> ScrapeResult:
     try:
         from playwright.sync_api import sync_playwright
         with sync_playwright() as p:
@@ -71,10 +58,11 @@ def _scrape_amul(url: str) -> ScrapeResult:
                 page.wait_for_timeout(1500)
                 page.locator(f"text={PINCODE}").last.click()
                 page.wait_for_timeout(3000)
-                logger.info("Amul pincode popup dismissed with %s", PINCODE)
+                logger.info("Pincode popup dismissed with %s", PINCODE)
             except Exception:
-                pass
+                pass  # No popup, page loaded directly
 
+            # Wait for product button to render
             try:
                 page.wait_for_selector("[title='Add to Cart'], .add-to-cart, .sold-out", timeout=8000)
             except Exception:
@@ -110,7 +98,7 @@ def _scrape_amul(url: str) -> ScrapeResult:
                 found_out_of_stock = True
                 out_text = el_text
 
-        logger.info("Amul scrape %s — in_stock=%s out_stock=%s price=%s", url, found_in_stock, found_out_of_stock, price)
+        logger.info("Scrape %s — in_stock=%s out_stock=%s price=%s", url, found_in_stock, found_out_of_stock, price)
 
         if found_in_stock:
             return ScrapeResult(in_stock=True, price=price, status_text="add to cart")
@@ -127,56 +115,7 @@ def _scrape_amul(url: str) -> ScrapeResult:
         return ScrapeResult(in_stock=False, price=price, status_text="unknown")
 
     except Exception as e:
-        logger.exception("Amul scrape failed for %s", url)
-        return ScrapeResult(in_stock=False, price=None, status_text="error", error=str(e))
-
-
-def _scrape_blinkit(url: str) -> ScrapeResult:
-    """
-    Blinkit serves full SSR HTML — no Playwright needed.
-    Stock logic (position-based):
-    - In stock     -> "add to cart" appears before any "out of stock" in page HTML
-    - Out of stock -> "out of stock" appears before "add to cart"
-    Product status is always near the top; recommendations/suggestions come later,
-    so first-occurrence position reliably identifies the product's own status.
-    """
-    try:
-        import os, requests as _requests
-        api_key = os.getenv("SCRAPERAPI_KEY", "")
-        if api_key:
-            # Route through ScraperAPI residential IPs to bypass datacenter IP blocks
-            fetch_url = f"http://api.scraperapi.com?api_key={api_key}&url={url}&render=false"
-            resp = _requests.get(fetch_url, timeout=30)
-        else:
-            import cloudscraper
-            resp = cloudscraper.create_scraper().get(url, timeout=20)
-        resp.raise_for_status()
-        html = resp.text
-
-        soup = BeautifulSoup(html, "lxml")
-        price = _extract_price(soup)
-
-        # Work on raw HTML (lowercase) for position-based detection
-        # Using raw HTML rather than soup.get_text() preserves relative positions
-        html_lower = html.lower()
-
-        pos_add = html_lower.find("add to cart")
-        pos_out = min(
-            (html_lower.find(kw) for kw in ["out of stock", "sold out", "currently unavailable"] if html_lower.find(kw) != -1),
-            default=-1,
-        )
-
-        logger.info("Blinkit scrape %s — pos_add=%s pos_out=%s price=%s", url, pos_add, pos_out, price)
-
-        if pos_add != -1 and (pos_out == -1 or pos_add < pos_out):
-            return ScrapeResult(in_stock=True, price=price, status_text="add to cart")
-        if pos_out != -1:
-            return ScrapeResult(in_stock=False, price=price, status_text="out of stock")
-
-        return ScrapeResult(in_stock=False, price=price, status_text="unknown")
-
-    except Exception as e:
-        logger.exception("Blinkit scrape failed for %s", url)
+        logger.exception("Scrape failed for %s", url)
         return ScrapeResult(in_stock=False, price=None, status_text="error", error=str(e))
 
 

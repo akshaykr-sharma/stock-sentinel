@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, HttpUrl, field_validator
 from typing import Optional
 from datetime import datetime, timezone
 import re
@@ -8,7 +8,6 @@ import re
 from app.database import get_db
 from app.models import Monitor
 from app.scheduler import add_monitor_job, remove_monitor_job, get_next_run
-from app.scraper import detect_platform
 
 router = APIRouter(prefix="/api/monitors", tags=["monitors"])
 
@@ -17,33 +16,7 @@ class MonitorCreate(BaseModel):
     name: str
     url: str
     phone_number: str
-    check_interval: int = 60
-
-    @field_validator("phone_number")
-    @classmethod
-    def validate_phone(cls, v: str) -> str:
-        cleaned = re.sub(r"[\s\-\(\)]", "", v)
-        if not re.match(r"^\+\d{10,15}$", cleaned):
-            raise ValueError("Phone must be in E.164 format: +919876543210")
-        return cleaned
-
-    @field_validator("check_interval")
-    @classmethod
-    def validate_interval(cls, v: int) -> int:
-        if v < 5:
-            raise ValueError("Minimum interval is 5 minutes")
-        if v > 1440:
-            raise ValueError("Maximum interval is 1440 minutes (24 hours)")
-        return v
-
-
-class MonitorCreateBoth(BaseModel):
-    """Create two monitors at once — one Amul URL and one Blinkit URL."""
-    name: str
-    amul_url: str
-    blinkit_url: str
-    phone_number: str
-    check_interval: int = 60
+    check_interval: int = 60  # minutes
 
     @field_validator("phone_number")
     @classmethod
@@ -78,7 +51,6 @@ class MonitorResponse(BaseModel):
     is_active: bool
     got_it: bool
     status: str
-    platform: str
     price: Optional[str]
     last_checked: Optional[datetime]
     next_check: Optional[datetime]
@@ -106,7 +78,6 @@ def create_monitor(data: MonitorCreate, db: Session = Depends(get_db)):
         url=str(data.url),
         phone_number=data.phone_number,
         check_interval=data.check_interval,
-        platform=detect_platform(str(data.url)),
         is_active=True,
         status="unknown",
     )
@@ -115,30 +86,6 @@ def create_monitor(data: MonitorCreate, db: Session = Depends(get_db)):
     db.refresh(monitor)
     add_monitor_job(monitor.id, monitor.check_interval)
     return monitor
-
-
-@router.post("/both", response_model=list[MonitorResponse], status_code=201)
-def create_both_monitors(data: MonitorCreateBoth, db: Session = Depends(get_db)):
-    """Create one Amul monitor + one Blinkit monitor simultaneously."""
-    created = []
-    for url, platform in [(data.amul_url, "amul"), (data.blinkit_url, "blinkit")]:
-        monitor = Monitor(
-            name=f"{data.name} ({platform.capitalize()})",
-            url=str(url),
-            phone_number=data.phone_number,
-            check_interval=data.check_interval,
-            platform=platform,
-            is_active=True,
-            status="unknown",
-        )
-        db.add(monitor)
-        db.flush()
-        created.append(monitor)
-    db.commit()
-    for m in created:
-        db.refresh(m)
-        add_monitor_job(m.id, m.check_interval)
-    return created
 
 
 @router.patch("/{monitor_id}", response_model=MonitorResponse)

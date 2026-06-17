@@ -18,18 +18,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def _migrate_db():
-    """Add columns introduced after initial deploy without dropping existing data."""
-    from sqlalchemy import text, inspect
-    with engine.connect() as conn:
-        inspector = inspect(engine)
-        cols = [c["name"] for c in inspector.get_columns("monitors")]
-        if "platform" not in cols:
-            conn.execute(text("ALTER TABLE monitors ADD COLUMN platform VARCHAR(20) DEFAULT 'amul'"))
-            conn.commit()
-            logger.info("Migration: added 'platform' column to monitors")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
@@ -37,7 +25,6 @@ async def lifespan(app: FastAPI):
     logger.info("WHATSAPP_TOKEN set: %s", bool(os.getenv("WHATSAPP_TOKEN")))
     logger.info("WHATSAPP_PHONE_ID set: %s", bool(os.getenv("WHATSAPP_PHONE_ID")))
     Base.metadata.create_all(bind=engine)
-    _migrate_db()
     start_scheduler()
 
     # Re-schedule any active monitors that survived a restart
