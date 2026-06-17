@@ -11,6 +11,14 @@ scheduler = BackgroundScheduler(timezone="UTC")
 def start_scheduler():
     if not scheduler.running:
         scheduler.start()
+        scheduler.add_job(
+            func=_cleanup_old_monitors,
+            trigger="interval",
+            hours=24,
+            id="cleanup_old_monitors",
+            next_run_time=datetime.now(timezone.utc),
+            misfire_grace_time=3600,
+        )
         logger.info("Scheduler started")
 
 
@@ -104,6 +112,28 @@ def _run_check(monitor_id: int, force_notify: bool = False):
         db.commit()
     except Exception:
         logger.exception("Error in check job for monitor %d", monitor_id)
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _cleanup_old_monitors():
+    """Delete monitors older than 7 days that are inactive or marked got_it."""
+    from app.database import SessionLocal
+    from app.models import Monitor
+
+    db = SessionLocal()
+    try:
+        cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+        old_monitors = db.query(Monitor).filter(Monitor.created_at < cutoff).all()
+        for monitor in old_monitors:
+            remove_monitor_job(monitor.id)
+            db.delete(monitor)
+        if old_monitors:
+            logger.info("Cleanup: deleted %d monitor(s) older than 7 days", len(old_monitors))
+        db.commit()
+    except Exception:
+        logger.exception("Error in cleanup job")
         db.rollback()
     finally:
         db.close()
