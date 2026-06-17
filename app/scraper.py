@@ -133,60 +133,43 @@ def _scrape_amul(url: str) -> ScrapeResult:
 
 def _scrape_blinkit(url: str) -> ScrapeResult:
     """
-    Blinkit stock logic (React SPA, no standard <button> for product actions):
-    - In stock     -> page text contains "add to cart" before any "out of stock"
-    - Out of stock -> page text contains "out of stock" before any "add to cart"
-    Blinkit shows product status near the top; suggestions/similar items come later.
-    We use first-occurrence position to determine the product's own status.
+    Blinkit serves full SSR HTML — no Playwright needed.
+    Stock logic (position-based):
+    - In stock     -> "add to cart" appears before any "out of stock" in page HTML
+    - Out of stock -> "out of stock" appears before "add to cart"
+    Product status is always near the top; recommendations/suggestions come later,
+    so first-occurrence position reliably identifies the product's own status.
     """
     try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
-            )
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-            )
-            page = context.new_page()
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-            page.wait_for_timeout(4000)  # Blinkit is a heavy React app
-
-            try:
-                page.wait_for_selector(
-                    "[class*='AddToCart'], [class*='out-of-stock'], [class*='OutOfStock'], button",
-                    timeout=8000,
-                )
-            except Exception:
-                page.wait_for_timeout(2000)
-
-            html = page.content()
-            browser.close()
+        import requests as _requests
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-IN,en;q=0.9",
+        }
+        resp = _requests.get(url, headers=headers, timeout=15, allow_redirects=True)
+        resp.raise_for_status()
+        html = resp.text
 
         soup = BeautifulSoup(html, "lxml")
         price = _extract_price(soup)
 
-        for tag in soup(["script", "style", "noscript"]):
-            tag.decompose()
+        # Work on raw HTML (lowercase) for position-based detection
+        # Using raw HTML rather than soup.get_text() preserves relative positions
+        html_lower = html.lower()
 
-        page_text = soup.get_text(separator=" ").lower()
-
-        # Find first position of each keyword in page text
-        pos_add = page_text.find("add to cart")
+        pos_add = html_lower.find("add to cart")
         pos_out = min(
-            (page_text.find(kw) for kw in OUT_OF_STOCK_KEYWORDS if page_text.find(kw) != -1),
+            (html_lower.find(kw) for kw in ["out of stock", "sold out", "currently unavailable"] if html_lower.find(kw) != -1),
             default=-1,
         )
 
         logger.info("Blinkit scrape %s — pos_add=%s pos_out=%s price=%s", url, pos_add, pos_out, price)
 
-        # Whichever signal appears first = the product's own status
         if pos_add != -1 and (pos_out == -1 or pos_add < pos_out):
             return ScrapeResult(in_stock=True, price=price, status_text="add to cart")
         if pos_out != -1:
