@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StockSentinel 🛒</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #f0fdf4; }
+    .card { background: white; border-radius: 16px; box-shadow: 0 2px 12px rgba(0,0,0,0.07); }
+    .status-badge { font-size: 0.75rem; font-weight: 600; padding: 3px 10px; border-radius: 999px; }
+    .in_stock    { background: #dcfce7; color: #166534; }
+    .out_of_stock{ background: #fee2e2; color: #991b1b; }
+    .unknown     { background: #fef9c3; color: #713f12; }
+    .error       { background: #fce7f3; color: #9d174d; }
+    .btn-primary { background: #16a34a; color: white; border-radius: 10px; padding: 12px 24px; font-weight: 600; transition: background 0.2s; }
+    .btn-primary:hover { background: #15803d; }
+    .btn-got-it  { background: #2563eb; color: white; border-radius: 8px; padding: 8px 16px; font-size: 0.85rem; font-weight: 600; }
+    .btn-got-it:hover  { background: #1d4ed8; }
+    .btn-danger  { background: #ef4444; color: white; border-radius: 8px; padding: 8px 14px; font-size: 0.85rem; font-weight: 600; }
+    .btn-danger:hover  { background: #dc2626; }
+    .btn-check   { background: #f59e0b; color: white; border-radius: 8px; padding: 8px 14px; font-size: 0.85rem; font-weight: 600; }
+    .btn-check:hover   { background: #d97706; }
+    .spinner { border: 3px solid #e5e7eb; border-top-color: #16a34a; border-radius: 50%; width: 22px; height: 22px; animation: spin 0.8s linear infinite; display: inline-block; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    input, select { border: 1.5px solid #d1fae5; border-radius: 10px; padding: 10px 14px; width: 100%; font-size: 1rem; outline: none; transition: border 0.2s; }
+    input:focus, select:focus { border-color: #16a34a; box-shadow: 0 0 0 3px rgba(22,163,74,0.1); }
+    label { font-size: 0.85rem; font-weight: 600; color: #374151; display: block; margin-bottom: 4px; }
+    .countdown { font-size: 0.78rem; color: #6b7280; }
+    .got-it-banner { background: #dcfce7; border-radius: 10px; padding: 10px 14px; display: flex; align-items: center; gap: 8px; }
+  </style>
+</head>
+<body class="min-h-screen py-6 px-4">
+
+  <!-- Header -->
+  <div class="max-w-lg mx-auto mb-6 text-center">
+    <div class="text-4xl mb-1">🛒</div>
+    <h1 class="text-2xl font-bold text-green-800">StockSentinel</h1>
+    <p class="text-sm text-gray-500 mt-1">Get WhatsApp alerts when your product is back in stock</p>
+  </div>
+
+  <!-- Add Monitor Form -->
+  <div class="max-w-lg mx-auto card p-5 mb-6">
+    <h2 class="text-lg font-bold text-gray-800 mb-4">+ Watch a Product</h2>
+    <form id="addForm" class="space-y-4">
+      <div>
+        <label>Product Name</label>
+        <input type="text" id="name" placeholder="e.g. Amul High Protein Buttermilk" required />
+      </div>
+      <div>
+        <label>Product URL</label>
+        <input type="url" id="url" placeholder="https://shop.amul.com/en/product/..." required />
+        <p class="text-xs text-gray-400 mt-1">Paste the full product page link</p>
+      </div>
+      <div>
+        <label>Your WhatsApp Number</label>
+        <input type="tel" id="phone" placeholder="+919876543210" required />
+        <p class="text-xs text-gray-400 mt-1">Include country code, e.g. +91 for India</p>
+      </div>
+      <div>
+        <label>Check Every</label>
+        <select id="interval">
+          <option value="15">Every 15 minutes</option>
+          <option value="30">Every 30 minutes</option>
+          <option value="60" selected>Every 1 hour</option>
+          <option value="120">Every 2 hours</option>
+          <option value="180">Every 3 hours</option>
+          <option value="360">Every 6 hours</option>
+        </select>
+      </div>
+      <div id="formError" class="text-red-600 text-sm hidden"></div>
+      <button type="submit" class="btn-primary w-full text-center" id="submitBtn">
+        Start Watching
+      </button>
+    </form>
+  </div>
+
+  <!-- Active Monitors -->
+  <div class="max-w-lg mx-auto">
+    <h2 class="text-lg font-bold text-gray-800 mb-3">Active Monitors</h2>
+    <div id="monitorList">
+      <div class="text-center text-gray-400 py-10">
+        <div class="text-3xl mb-2">📭</div>
+        <p>No products being watched yet.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-sm px-5 py-3 rounded-full shadow-lg opacity-0 transition-opacity duration-300 pointer-events-none z-50">
+    Message
+  </div>
+
+  <script>
+    const API = '/api/monitors';
+    let monitors = [];
+    let pollTimer = null;
+
+    // ---- Fetch & Render ----
+    async function fetchMonitors() {
+      try {
+        const res = await fetch(API + '/');
+        monitors = await res.json();
+        renderMonitors();
+      } catch (e) {
+        console.error('Failed to fetch monitors', e);
+      }
+    }
+
+    function renderMonitors() {
+      const list = document.getElementById('monitorList');
+      if (!monitors.length) {
+        list.innerHTML = `<div class="text-center text-gray-400 py-10"><div class="text-3xl mb-2">📭</div><p>No products being watched yet.</p></div>`;
+        return;
+      }
+      list.innerHTML = monitors.map(m => cardHtml(m)).join('');
+    }
+
+    function cardHtml(m) {
+      const statusLabel = { in_stock: '✅ In Stock', out_of_stock: '❌ Out of Stock', unknown: '🔍 Checking...', error: '⚠️ Error' };
+      const lastChecked = m.last_checked ? timeSince(m.last_checked) : 'Never';
+      const nextCheck = m.next_check ? countdown(m.next_check) : '—';
+      const priceHtml = m.price ? `<span class="text-green-700 font-semibold">${m.price}</span>` : '';
+      const intervalLabel = intervalText(m.check_interval);
+
+      if (m.got_it) {
+        return `
+          <div class="card p-4 mb-4 opacity-70">
+            <div class="got-it-banner mb-3">
+              <span class="text-xl">🎉</span>
+              <div><p class="font-semibold text-green-800">Got it! Monitoring stopped.</p></div>
+            </div>
+            <p class="font-semibold text-gray-700 truncate">${escHtml(m.name)}</p>
+            <p class="text-xs text-gray-400 truncate mb-3">${escHtml(m.url)}</p>
+            <button onclick="deleteMonitor(${m.id})" class="btn-danger text-xs">🗑 Remove</button>
+          </div>`;
+      }
+
+      return `
+        <div class="card p-4 mb-4" id="card-${m.id}">
+          <div class="flex items-start justify-between gap-2 mb-2">
+            <p class="font-semibold text-gray-800 leading-snug">${escHtml(m.name)}</p>
+            <span class="status-badge ${m.status} flex-shrink-0">${statusLabel[m.status] || m.status}</span>
+          </div>
+          <p class="text-xs text-gray-400 truncate mb-1">${escHtml(m.url)}</p>
+          ${priceHtml ? `<p class="text-sm mb-2">${priceHtml}</p>` : ''}
+          ${m.error_message ? `<p class="text-xs text-red-400 mb-2">⚠️ ${escHtml(m.error_message)}</p>` : ''}
+          <div class="flex gap-4 text-xs text-gray-400 mb-3">
+            <span>🕐 Last: ${lastChecked}</span>
+            <span>⏭ Next: <span class="countdown-${m.id}">${nextCheck}</span></span>
+            <span>🔁 ${intervalLabel}</span>
+          </div>
+          <div class="flex gap-2 flex-wrap">
+            <button onclick="markGotIt(${m.id})" class="btn-got-it">✓ Got It!</button>
+            <button onclick="checkNow(${m.id})" class="btn-check">🔍 Check Now</button>
+            <button onclick="deleteMonitor(${m.id})" class="btn-danger">🗑</button>
+          </div>
+        </div>`;
+    }
+
+    // ---- Actions ----
+    document.getElementById('addForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const btn = document.getElementById('submitBtn');
+      const errEl = document.getElementById('formError');
+      errEl.classList.add('hidden');
+      btn.innerHTML = '<div class="spinner mx-auto"></div>';
+      btn.disabled = true;
+
+      const payload = {
+        name: document.getElementById('name').value.trim(),
+        url: document.getElementById('url').value.trim(),
+        phone_number: document.getElementById('phone').value.trim(),
+        check_interval: parseInt(document.getElementById('interval').value),
+      };
+
+      try {
+        const res = await fetch(API + '/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        if (!res.ok) {
+          const err = await res.json();
+          const msg = err.detail?.[0]?.msg || err.detail || 'Failed to add monitor';
+          errEl.textContent = msg;
+          errEl.classList.remove('hidden');
+        } else {
+          e.target.reset();
+          showToast('✅ Monitor added! First check running now.');
+          await fetchMonitors();
+        }
+      } catch (err) {
+        errEl.textContent = 'Network error. Please try again.';
+        errEl.classList.remove('hidden');
+      } finally {
+        btn.innerHTML = 'Start Watching';
+        btn.disabled = false;
+      }
+    });
+
+    async function markGotIt(id) {
+      await fetch(`${API}/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ got_it: true }),
+      });
+      showToast('🎉 Great! Monitoring stopped.');
+      await fetchMonitors();
+    }
+
+    async function deleteMonitor(id) {
+      if (!confirm('Remove this monitor?')) return;
+      await fetch(`${API}/${id}`, { method: 'DELETE' });
+      showToast('🗑 Monitor removed.');
+      await fetchMonitors();
+    }
+
+    async function checkNow(id) {
+      const btn = event.target;
+      btn.disabled = true;
+      btn.textContent = '⏳ Checking...';
+      try {
+        await fetch(`${API}/${id}/check-now`, { method: 'POST' });
+        showToast('🔍 Check complete! Refreshing...');
+        await fetchMonitors();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = '🔍 Check Now';
+      }
+    }
+
+    // ---- Helpers ----
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.style.opacity = '1';
+      setTimeout(() => { t.style.opacity = '0'; }, 3000);
+    }
+
+    function timeSince(isoDate) {
+      const d = new Date(isoDate + (isoDate.endsWith('Z') ? '' : 'Z'));
+      const secs = Math.floor((Date.now() - d) / 1000);
+      if (secs < 60) return `${secs}s ago`;
+      if (secs < 3600) return `${Math.floor(secs/60)}m ago`;
+      return `${Math.floor(secs/3600)}h ago`;
+    }
+
+    function countdown(isoDate) {
+      const d = new Date(isoDate + (isoDate.endsWith('Z') ? '' : 'Z'));
+      const secs = Math.floor((d - Date.now()) / 1000);
+      if (secs <= 0) return 'soon';
+      if (secs < 60) return `${secs}s`;
+      if (secs < 3600) return `${Math.floor(secs/60)}m`;
+      return `${Math.floor(secs/3600)}h ${Math.floor((secs%3600)/60)}m`;
+    }
+
+    function intervalText(mins) {
+      if (mins < 60) return `Every ${mins}min`;
+      if (mins === 60) return 'Every hour';
+      return `Every ${mins/60}h`;
+    }
+
+    function escHtml(str) {
+      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ---- Live countdown update (no refetch) ----
+    function updateCountdowns() {
+      monitors.forEach(m => {
+        if (m.next_check && !m.got_it) {
+          const el = document.querySelector(`.countdown-${m.id}`);
+          if (el) el.textContent = countdown(m.next_check);
+        }
+      });
+    }
+
+    // ---- Poll & Init ----
+    fetchMonitors();
+    setInterval(fetchMonitors, 30000);       // refresh data every 30s
+    setInterval(updateCountdowns, 1000);     // update countdowns every second
+  </script>
+</body>
+</html>
