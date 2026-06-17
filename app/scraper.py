@@ -1,5 +1,3 @@
-import requests
-import cloudscraper
 from bs4 import BeautifulSoup
 import re
 from dataclasses import dataclass
@@ -8,35 +6,12 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "Accept-Language": "en-IN,en;q=0.9,hi;q=0.8",
-    "Accept-Encoding": "gzip, deflate",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Sec-Ch-Ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
-    "Sec-Ch-Ua-Mobile": "?0",
-    "Sec-Ch-Ua-Platform": '"Windows"',
-    "Cache-Control": "max-age=0",
-}
-
-# Keywords that indicate OUT OF STOCK
 OUT_OF_STOCK_KEYWORDS = [
     "sold out", "out of stock", "notify me", "currently unavailable",
     "not available", "soldout", "outofstock", "unavailable",
     "coming soon", "temporarily unavailable",
 ]
 
-# Keywords that indicate IN STOCK
 IN_STOCK_KEYWORDS = [
     "add to cart", "add to bag", "buy now", "in stock",
     "addtocart", "add_to_cart",
@@ -53,22 +28,48 @@ class ScrapeResult:
 
 def scrape_product(url: str) -> ScrapeResult:
     try:
-        # cloudscraper bypasses Cloudflare JS challenges
-        session = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
-        resp = session.get(url, timeout=20)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+                locale="en-IN",
+            )
+            page = context.new_page()
 
-        # Remove script/style noise
+            # Block images/fonts to speed up loading
+            page.route("**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf}", lambda r: r.abort())
+
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+
+            # Wait for main content to render
+            try:
+                page.wait_for_selector("button", timeout=8000)
+            except Exception:
+                pass
+
+            html = page.content()
+            browser.close()
+
+        soup = BeautifulSoup(html, "lxml")
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
 
         page_text = soup.get_text(separator=" ").lower()
-        price = _extract_price(soup, resp.text)
+        price = _extract_price(soup)
 
-        # Scan ALL buttons and collect signals — don't stop at first match.
-        # Related/recommended products on the same page can have "Sold Out" buttons
-        # that appear before the main product's "Add to Cart", causing false negatives.
         found_in_stock = False
         found_out_of_stock = False
         out_text = ""
@@ -82,25 +83,23 @@ def scrape_product(url: str) -> ScrapeResult:
                 found_out_of_stock = True
                 out_text = btn_text
 
-        # In-stock wins if ANY active "Add to Cart" button exists
         logger.info("Scrape %s — in_stock_btn=%s out_stock_btn=%s price=%s", url, found_in_stock, found_out_of_stock, price)
+
         if not found_in_stock and not found_out_of_stock:
             logger.warning("No stock buttons found. Page snippet: %s", page_text[:300])
+
         if found_in_stock:
             return ScrapeResult(in_stock=True, price=price, status_text="add to cart")
         if found_out_of_stock:
             return ScrapeResult(in_stock=False, price=price, status_text=out_text or "sold out")
 
-        # Fallback: scan page text — in_stock check first
         for kw in IN_STOCK_KEYWORDS:
             if kw in page_text:
                 return ScrapeResult(in_stock=True, price=price, status_text=kw)
-
         for kw in OUT_OF_STOCK_KEYWORDS:
             if kw in page_text:
                 return ScrapeResult(in_stock=False, price=price, status_text=kw)
 
-        # Check meta tags (some sites embed availability)
         availability_meta = soup.find("meta", {"property": "product:availability"}) or \
                             soup.find("meta", {"name": "availability"})
         if availability_meta:
@@ -110,25 +109,19 @@ def scrape_product(url: str) -> ScrapeResult:
             if "out" in content:
                 return ScrapeResult(in_stock=False, price=price, status_text=content)
 
-        return ScrapeResult(in_stock=False, price=price, status_text="unknown — could not determine")
+        return ScrapeResult(in_stock=False, price=price, status_text="unknown")
 
-    except requests.exceptions.Timeout:
-        return ScrapeResult(in_stock=False, price=None, status_text="error", error="Request timed out")
-    except requests.exceptions.HTTPError as e:
-        return ScrapeResult(in_stock=False, price=None, status_text="error", error=f"HTTP {e.response.status_code}")
     except Exception as e:
         logger.exception("Scrape failed for %s", url)
         return ScrapeResult(in_stock=False, price=None, status_text="error", error=str(e))
 
 
-def _extract_price(soup: BeautifulSoup, raw_html: str) -> Optional[str]:
-    # StoreHippo / Amul pattern: "MRP₹900" or "INR900"
+def _extract_price(soup: BeautifulSoup) -> Optional[str]:
     price_patterns = [
         r"(?:MRP\s*[₹$£€]?\s*)([\d,]+(?:\.\d{1,2})?)",
         r"(?:INR\s*)([\d,]+(?:\.\d{1,2})?)",
         r"(?:[₹$£€]\s*)([\d,]+(?:\.\d{1,2})?)",
         r"(?:Rs\.?\s*)([\d,]+(?:\.\d{1,2})?)",
-        r"(?:Price[:\s]+)([\d,]+(?:\.\d{1,2})?)",
     ]
     text = soup.get_text(separator=" ")
     for pattern in price_patterns:
@@ -136,7 +129,6 @@ def _extract_price(soup: BeautifulSoup, raw_html: str) -> Optional[str]:
         if match:
             return f"₹{match.group(1)}"
 
-    # JSON-LD structured data
     for script in soup.find_all("script", {"type": "application/ld+json"}):
         try:
             import json
@@ -144,12 +136,10 @@ def _extract_price(soup: BeautifulSoup, raw_html: str) -> Optional[str]:
             if isinstance(data, dict):
                 offers = data.get("offers", {})
                 if isinstance(offers, dict):
-                    price = offers.get("price") or offers.get("lowPrice")
+                    p = offers.get("price") or offers.get("lowPrice")
                     currency = offers.get("priceCurrency", "INR")
-                    if price:
-                        symbol = "₹" if currency == "INR" else currency
-                        return f"{symbol}{price}"
+                    if p:
+                        return f"{'₹' if currency == 'INR' else currency}{p}"
         except Exception:
             pass
-
     return None
