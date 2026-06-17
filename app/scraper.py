@@ -1,3 +1,4 @@
+import requests
 from bs4 import BeautifulSoup
 import re
 from dataclasses import dataclass
@@ -5,6 +6,19 @@ from typing import Optional
 import logging
 
 logger = logging.getLogger(__name__)
+
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-IN,en;q=0.9",
+    "Accept-Encoding": "gzip, deflate",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
 
 OUT_OF_STOCK_KEYWORDS = [
     "sold out", "out of stock", "notify me", "currently unavailable",
@@ -28,42 +42,10 @@ class ScrapeResult:
 
 def scrape_product(url: str) -> ScrapeResult:
     try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            browser = p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled",
-                ],
-            )
-            context = browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                viewport={"width": 1280, "height": 800},
-                locale="en-IN",
-            )
-            page = context.new_page()
+        resp = requests.get(url, headers=HEADERS, timeout=15)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
 
-            # Block images/fonts to speed up loading
-            page.route("**/*.{png,jpg,jpeg,gif,svg,woff,woff2,ttf}", lambda r: r.abort())
-
-            page.goto(url, wait_until="domcontentloaded", timeout=30000)
-
-            # Wait for main content to render
-            try:
-                page.wait_for_selector("button", timeout=8000)
-            except Exception:
-                pass
-
-            html = page.content()
-            browser.close()
-
-        soup = BeautifulSoup(html, "lxml")
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
 
@@ -79,13 +61,16 @@ def scrape_product(url: str) -> ScrapeResult:
             el_text = el.get_text(strip=True).lower()
             if not el_text:
                 continue
-            # disabled="0" means NOT disabled, only treat as disabled if value is not "0"
+            # disabled="0" means NOT disabled — only treat as disabled if value is not "0"
             disabled_val = el.get("disabled", None)
-            disabled = disabled_val is not None and disabled_val != "0"
+            disabled = disabled_val is not None and str(disabled_val) != "0"
 
             if any(kw in el_text for kw in IN_STOCK_KEYWORDS) and not disabled:
                 found_in_stock = True
-            elif any(kw in el_text for kw in OUT_OF_STOCK_KEYWORDS) or (disabled and any(kw in el_text for kw in IN_STOCK_KEYWORDS)):
+            elif any(kw in el_text for kw in OUT_OF_STOCK_KEYWORDS):
+                found_out_of_stock = True
+                out_text = el_text
+            elif disabled and any(kw in el_text for kw in IN_STOCK_KEYWORDS):
                 found_out_of_stock = True
                 out_text = el_text
 
@@ -94,11 +79,13 @@ def scrape_product(url: str) -> ScrapeResult:
         if not found_in_stock and not found_out_of_stock:
             logger.warning("No stock buttons found. Page snippet: %s", page_text[:300])
 
+        # in_stock wins if ANY active Add to Cart exists
         if found_in_stock:
             return ScrapeResult(in_stock=True, price=price, status_text="add to cart")
         if found_out_of_stock:
             return ScrapeResult(in_stock=False, price=price, status_text=out_text or "sold out")
 
+        # Fallback: page text
         for kw in IN_STOCK_KEYWORDS:
             if kw in page_text:
                 return ScrapeResult(in_stock=True, price=price, status_text=kw)
@@ -106,17 +93,12 @@ def scrape_product(url: str) -> ScrapeResult:
             if kw in page_text:
                 return ScrapeResult(in_stock=False, price=price, status_text=kw)
 
-        availability_meta = soup.find("meta", {"property": "product:availability"}) or \
-                            soup.find("meta", {"name": "availability"})
-        if availability_meta:
-            content = availability_meta.get("content", "").lower()
-            if "in stock" in content:
-                return ScrapeResult(in_stock=True, price=price, status_text=content)
-            if "out" in content:
-                return ScrapeResult(in_stock=False, price=price, status_text=content)
-
         return ScrapeResult(in_stock=False, price=price, status_text="unknown")
 
+    except requests.exceptions.Timeout:
+        return ScrapeResult(in_stock=False, price=None, status_text="error", error="Request timed out")
+    except requests.exceptions.HTTPError as e:
+        return ScrapeResult(in_stock=False, price=None, status_text="error", error=f"HTTP {e.response.status_code}")
     except Exception as e:
         logger.exception("Scrape failed for %s", url)
         return ScrapeResult(in_stock=False, price=None, status_text="error", error=str(e))
