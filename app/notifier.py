@@ -64,3 +64,23 @@ def build_back_out_of_stock_message(product_name: str) -> str:
         f"❌ {product_name} went back out of stock.\n"
         f"We'll keep watching and alert you when it's available again."
     )
+
+
+def build_status_message(product_name: str, url: str, status: str, price: str | None) -> str:
+    if status == "in_stock":
+        icon = "✅"
+        status_text = "IN STOCK"
+    elif status == "out_of_stock":
+        icon = "❌"
+        status_text = "OUT OF STOCK"
+    else:
+        icon = "⚠️"
+        status_text = status.upper()
+
+    price_line = f"💰 Price: {price}\n" if price else ""
+    return (
+        f"📋 StockSentinel Status Update\n\n"
+        f"{icon} {product_name} is currently {status_text}\n\n"
+        f"{price_line}"
+        f"🔗 {url}"
+    ).strip()

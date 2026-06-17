@@ -134,6 +134,6 @@ def check_now(monitor_id: int, db: Session = Depends(get_db)):
     monitor = db.get(Monitor, monitor_id)
     if not monitor:
         raise HTTPException(status_code=404, detail="Monitor not found")
-    _run_check(monitor_id)
+    _run_check(monitor_id, force_notify=True)
     db.refresh(monitor)
     return monitor

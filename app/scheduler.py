@@ -51,12 +51,12 @@ def get_next_run(monitor_id: int) -> datetime | None:
     return None
 
 
-def _run_check(monitor_id: int):
+def _run_check(monitor_id: int, force_notify: bool = False):
     """Executed by APScheduler in a background thread."""
     from app.database import SessionLocal
     from app.models import Monitor
     from app.scraper import scrape_product
-    from app.notifier import send_whatsapp, build_in_stock_message, build_back_out_of_stock_message
+    from app.notifier import send_whatsapp, build_in_stock_message, build_back_out_of_stock_message, build_status_message
 
     db = SessionLocal()
     try:
@@ -85,13 +85,18 @@ def _run_check(monitor_id: int):
         if next_run:
             monitor.next_check = next_run
 
-        # Notify on transition: out_of_stock / unknown → in_stock
-        if monitor.status == "in_stock" and previous_status != "in_stock":
+        # Manual check-now: always send current status
+        if force_notify:
+            msg = build_status_message(monitor.name, monitor.url, monitor.status, monitor.price)
+            send_whatsapp(monitor.phone_number, msg)
+            logger.info("Force-notified %s: %s is %s", monitor.phone_number, monitor.name, monitor.status)
+
+        # Scheduled: notify only on status transition
+        elif monitor.status == "in_stock" and previous_status != "in_stock":
             msg = build_in_stock_message(monitor.name, monitor.url, monitor.price)
             send_whatsapp(monitor.phone_number, msg)
             logger.info("Notified %s: %s is IN STOCK", monitor.phone_number, monitor.name)
 
-        # Notify if it went back out of stock (optional courtesy alert)
         elif monitor.status == "out_of_stock" and previous_status == "in_stock":
             msg = build_back_out_of_stock_message(monitor.name)
             send_whatsapp(monitor.phone_number, msg)
