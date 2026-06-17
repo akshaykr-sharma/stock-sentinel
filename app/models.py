@@ -18,4 +18,5 @@ class Monitor(Base):
     last_checked = Column(DateTime, nullable=True)
     next_check = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    platform = Column(String(20), default="amul")  # amul | blinkit
     error_message = Column(Text, nullable=True)
