@@ -141,9 +141,15 @@ def _scrape_blinkit(url: str) -> ScrapeResult:
     so first-occurrence position reliably identifies the product's own status.
     """
     try:
-        import cloudscraper
-        scraper = cloudscraper.create_scraper()
-        resp = scraper.get(url, timeout=20)
+        import os, requests as _requests
+        api_key = os.getenv("SCRAPERAPI_KEY", "")
+        if api_key:
+            # Route through ScraperAPI residential IPs to bypass datacenter IP blocks
+            fetch_url = f"http://api.scraperapi.com?api_key={api_key}&url={url}&render=false"
+            resp = _requests.get(fetch_url, timeout=30)
+        else:
+            import cloudscraper
+            resp = cloudscraper.create_scraper().get(url, timeout=20)
         resp.raise_for_status()
         html = resp.text
 
