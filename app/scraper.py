@@ -55,29 +55,37 @@ def scrape_product(url: str) -> ScrapeResult:
         page_text = soup.get_text(separator=" ").lower()
         price = _extract_price(soup, resp.text)
 
-        # Check buttons first — most reliable signal
-        buttons = soup.find_all("button")
-        for btn in buttons:
+        # Scan ALL buttons and collect signals — don't stop at first match.
+        # Related/recommended products on the same page can have "Sold Out" buttons
+        # that appear before the main product's "Add to Cart", causing false negatives.
+        found_in_stock = False
+        found_out_of_stock = False
+        out_text = ""
+
+        for btn in soup.find_all("button"):
             btn_text = btn.get_text(strip=True).lower()
-            if any(kw in btn_text for kw in OUT_OF_STOCK_KEYWORDS):
-                return ScrapeResult(in_stock=False, price=price, status_text=btn_text)
-            if any(kw in btn_text for kw in IN_STOCK_KEYWORDS):
-                return ScrapeResult(in_stock=True, price=price, status_text=btn_text)
+            disabled = btn.has_attr("disabled")
+            if any(kw in btn_text for kw in IN_STOCK_KEYWORDS) and not disabled:
+                found_in_stock = True
+            elif any(kw in btn_text for kw in OUT_OF_STOCK_KEYWORDS) or disabled:
+                found_out_of_stock = True
+                out_text = btn_text
 
-        # Check disabled/unavailable buttons
-        for btn in soup.find_all("button", attrs={"disabled": True}):
-            btn_text = btn.get_text(strip=True).lower()
-            if btn_text:
-                return ScrapeResult(in_stock=False, price=price, status_text=f"disabled: {btn_text}")
+        # In-stock wins if ANY active "Add to Cart" button exists
+        logger.info("Scrape %s — in_stock_btn=%s out_stock_btn=%s", url, found_in_stock, found_out_of_stock)
+        if found_in_stock:
+            return ScrapeResult(in_stock=True, price=price, status_text="add to cart")
+        if found_out_of_stock:
+            return ScrapeResult(in_stock=False, price=price, status_text=out_text or "sold out")
 
-        # Fallback: scan page text
-        for kw in OUT_OF_STOCK_KEYWORDS:
-            if kw in page_text:
-                return ScrapeResult(in_stock=False, price=price, status_text=kw)
-
+        # Fallback: scan page text — in_stock check first
         for kw in IN_STOCK_KEYWORDS:
             if kw in page_text:
                 return ScrapeResult(in_stock=True, price=price, status_text=kw)
+
+        for kw in OUT_OF_STOCK_KEYWORDS:
+            if kw in page_text:
+                return ScrapeResult(in_stock=False, price=price, status_text=kw)
 
         # Check meta tags (some sites embed availability)
         availability_meta = soup.find("meta", {"property": "product:availability"}) or \
