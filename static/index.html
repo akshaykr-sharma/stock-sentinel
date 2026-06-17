@@ -49,8 +49,9 @@
       </div>
       <div>
         <label>Product URL</label>
-        <input type="url" id="url" placeholder="https://shop.amul.com/en/product/..." required />
-        <p class="text-xs text-gray-400 mt-1">Paste the full product page link</p>
+        <input type="url" id="url" placeholder="https://shop.amul.com/en/product/..." required oninput="checkUrlWarning(this.value)" />
+        <p class="text-xs text-gray-400 mt-1">Paste the full <strong>product</strong> page link (not a category/browse page)</p>
+        <p id="urlWarning" class="text-xs text-red-500 mt-1 hidden">⚠️ This looks like a category page, not a specific product. Make sure the URL contains <strong>/product/</strong>.</p>
       </div>
       <div>
         <label>Your WhatsApp Number</label>
@@ -156,6 +157,12 @@
             <button onclick="deleteMonitor(${m.id})" class="btn-danger">🗑</button>
           </div>
         </div>`;
+    }
+
+    function checkUrlWarning(val) {
+      const w = document.getElementById('urlWarning');
+      const isBrowse = val && !val.includes('/product/');
+      w.classList.toggle('hidden', !isBrowse || !val);
     }
 
     // ---- Actions ----
