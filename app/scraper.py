@@ -74,14 +74,20 @@ def scrape_product(url: str) -> ScrapeResult:
         found_out_of_stock = False
         out_text = ""
 
-        for btn in soup.find_all("button"):
-            btn_text = btn.get_text(strip=True).lower()
-            disabled = btn.has_attr("disabled")
-            if any(kw in btn_text for kw in IN_STOCK_KEYWORDS) and not disabled:
+        # Check both <button> and <a> tags — Amul uses <a class="add-to-cart">
+        for el in soup.find_all(["button", "a"]):
+            el_text = el.get_text(strip=True).lower()
+            if not el_text:
+                continue
+            # disabled="0" means NOT disabled, only treat as disabled if value is not "0"
+            disabled_val = el.get("disabled", None)
+            disabled = disabled_val is not None and disabled_val != "0"
+
+            if any(kw in el_text for kw in IN_STOCK_KEYWORDS) and not disabled:
                 found_in_stock = True
-            elif any(kw in btn_text for kw in OUT_OF_STOCK_KEYWORDS) or disabled:
+            elif any(kw in el_text for kw in OUT_OF_STOCK_KEYWORDS) or (disabled and any(kw in el_text for kw in IN_STOCK_KEYWORDS)):
                 found_out_of_stock = True
-                out_text = btn_text
+                out_text = el_text
 
         logger.info("Scrape %s — in_stock_btn=%s out_stock_btn=%s price=%s", url, found_in_stock, found_out_of_stock, price)
 
