@@ -4,6 +4,5 @@ sqlalchemy==2.0.36
 apscheduler==3.10.4
 requests==2.32.3
 beautifulsoup4==4.12.3
-twilio==9.3.7
 python-dotenv==1.0.1
 lxml==5.3.0
