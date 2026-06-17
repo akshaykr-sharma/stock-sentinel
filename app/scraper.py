@@ -1,4 +1,3 @@
-import requests
 from bs4 import BeautifulSoup
 import re
 from dataclasses import dataclass
@@ -7,18 +6,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-IN,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate",
-    "Connection": "keep-alive",
-    "Upgrade-Insecure-Requests": "1",
-}
+PINCODE = "560087"
 
 OUT_OF_STOCK_KEYWORDS = [
     "sold out", "out of stock", "notify me", "currently unavailable",
@@ -42,10 +30,48 @@ class ScrapeResult:
 
 def scrape_product(url: str) -> ScrapeResult:
     try:
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "lxml")
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            browser = p.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"],
+            )
+            context = browser.new_context(
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
+                ),
+                viewport={"width": 1280, "height": 800},
+            )
+            page = context.new_page()
+            page.goto(url, wait_until="domcontentloaded", timeout=30000)
+            page.wait_for_timeout(2000)
 
+            # Handle pincode popup if present
+            try:
+                pincode_input = page.locator(
+                    "input[placeholder*='PINCODE'], input[placeholder*='pincode'], input[placeholder*='Pincode']"
+                ).first
+                pincode_input.wait_for(timeout=5000)
+                pincode_input.fill(PINCODE)
+                page.wait_for_timeout(1500)
+                page.locator(f"text={PINCODE}").last.click()
+                page.wait_for_timeout(3000)
+                logger.info("Pincode popup dismissed with %s", PINCODE)
+            except Exception:
+                pass  # No popup, page loaded directly
+
+            # Wait for product button to render
+            try:
+                page.wait_for_selector("[title='Add to Cart'], .add-to-cart, .sold-out", timeout=8000)
+            except Exception:
+                page.wait_for_timeout(2000)
+
+            html = page.content()
+            browser.close()
+
+        soup = BeautifulSoup(html, "lxml")
         for tag in soup(["script", "style", "noscript"]):
             tag.decompose()
 
@@ -56,12 +82,10 @@ def scrape_product(url: str) -> ScrapeResult:
         found_out_of_stock = False
         out_text = ""
 
-        # Check both <button> and <a> tags — Amul uses <a class="add-to-cart">
         for el in soup.find_all(["button", "a"]):
             el_text = el.get_text(strip=True).lower()
             if not el_text:
                 continue
-            # disabled="0" means NOT disabled — only treat as disabled if value is not "0"
             disabled_val = el.get("disabled", None)
             disabled = disabled_val is not None and str(disabled_val) != "0"
 
@@ -74,18 +98,13 @@ def scrape_product(url: str) -> ScrapeResult:
                 found_out_of_stock = True
                 out_text = el_text
 
-        logger.info("Scrape %s — in_stock_btn=%s out_stock_btn=%s price=%s", url, found_in_stock, found_out_of_stock, price)
+        logger.info("Scrape %s — in_stock=%s out_stock=%s price=%s", url, found_in_stock, found_out_of_stock, price)
 
-        if not found_in_stock and not found_out_of_stock:
-            logger.warning("No stock buttons found. Page snippet: %s", page_text[:300])
-
-        # in_stock wins if ANY active Add to Cart exists
         if found_in_stock:
             return ScrapeResult(in_stock=True, price=price, status_text="add to cart")
         if found_out_of_stock:
             return ScrapeResult(in_stock=False, price=price, status_text=out_text or "sold out")
 
-        # Fallback: page text
         for kw in IN_STOCK_KEYWORDS:
             if kw in page_text:
                 return ScrapeResult(in_stock=True, price=price, status_text=kw)
@@ -95,10 +114,6 @@ def scrape_product(url: str) -> ScrapeResult:
 
         return ScrapeResult(in_stock=False, price=price, status_text="unknown")
 
-    except requests.exceptions.Timeout:
-        return ScrapeResult(in_stock=False, price=None, status_text="error", error="Request timed out")
-    except requests.exceptions.HTTPError as e:
-        return ScrapeResult(in_stock=False, price=None, status_text="error", error=f"HTTP {e.response.status_code}")
     except Exception as e:
         logger.exception("Scrape failed for %s", url)
         return ScrapeResult(in_stock=False, price=None, status_text="error", error=str(e))
