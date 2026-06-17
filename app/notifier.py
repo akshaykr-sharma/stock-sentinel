@@ -4,8 +4,6 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN", "")          # Meta permanent token
-WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")    # Phone number ID from Meta
 META_API_URL = "https://graph.facebook.com/v21.0/{phone_id}/messages"
 
 
@@ -14,14 +12,18 @@ def send_whatsapp(to_number: str, message: str) -> bool:
     Send a WhatsApp message via Meta Cloud API.
     to_number: E.164 format without '+', e.g. 919876543210
     """
-    if not WHATSAPP_TOKEN or not WHATSAPP_PHONE_ID:
+    # Read at call time so Railway env var updates take effect without redeploy
+    token = os.getenv("WHATSAPP_TOKEN", "")
+    phone_id = os.getenv("WHATSAPP_PHONE_ID", "")
+
+    if not token or not phone_id:
         logger.error("WHATSAPP_TOKEN or WHATSAPP_PHONE_ID not configured")
         return False
 
     # Strip leading + if present
     to = to_number.lstrip("+")
 
-    url = META_API_URL.format(phone_id=WHATSAPP_PHONE_ID)
+    url = META_API_URL.format(phone_id=phone_id)
     payload = {
         "messaging_product": "whatsapp",
         "to": to,
@@ -29,7 +31,7 @@ def send_whatsapp(to_number: str, message: str) -> bool:
         "text": {"body": message},
     }
     headers = {
-        "Authorization": f"Bearer {WHATSAPP_TOKEN}",
+        "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
 
