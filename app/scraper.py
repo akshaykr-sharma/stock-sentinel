@@ -1,4 +1,5 @@
 import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 import re
 from dataclasses import dataclass
@@ -52,16 +53,9 @@ class ScrapeResult:
 
 def scrape_product(url: str) -> ScrapeResult:
     try:
-        session = requests.Session()
-        session.headers.update(HEADERS)
-        # Visit homepage first to get cookies (avoids bot detection)
-        from urllib.parse import urlparse
-        base = f"{urlparse(url).scheme}://{urlparse(url).netloc}"
-        try:
-            session.get(base, timeout=10)
-        except Exception:
-            pass
-        resp = session.get(url, timeout=15)
+        # cloudscraper bypasses Cloudflare JS challenges
+        session = cloudscraper.create_scraper(browser={"browser": "chrome", "platform": "windows", "mobile": False})
+        resp = session.get(url, timeout=20)
         resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "lxml")
 
